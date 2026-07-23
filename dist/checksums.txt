@@ -1,0 +1,9 @@
+ef405179e44928e89a0292a1ea9b8d44c5008fd0873b2532e4e28b47ae6555c1  cc-connect-v1.3.3-darwin-amd64
+e0e2d65d8ac8e0d91dafb281141aeff8331c81453a50e2855340c63b68dbf0e8  cc-connect-v1.3.3-darwin-amd64.tar.gz
+61218ee196e950054639a9fc40701dfb67fa430b739fc14b4aefa05a7701579b  cc-connect-v1.3.3-darwin-arm64
+a073793cf8d631ae3bf6db2c01e40e234f53b3c06cc5867c4aadee9f98502c0f  cc-connect-v1.3.3-darwin-arm64.tar.gz
+7350faec587b02fa6992750f49bea01cea99c586bfa0cebfcfa26068b4e50db0  cc-connect-v1.3.3-linux-amd64
+e35bb9dd6212253809185fd8d8f904f696cbb24b34f724b2502505bc23900be5  cc-connect-v1.3.3-linux-amd64.tar.gz
+c30ccb3a564f823d36dbbced9427e8327b220b9cdc7602680eb368ae7da78066  cc-connect-v1.3.3-linux-arm64
+49afafc4f25a13996f46ee1661cac226c2db06c4cbd549d8ae8c91911377e0a1  cc-connect-v1.3.3-linux-arm64.tar.gz
+5ff453b76b287ea7d04f420b598b6b2d8300c7e7a5593b9e87286226edc51332  checksums.txt
