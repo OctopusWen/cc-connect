@@ -185,6 +185,20 @@ func TestListKimiSessions_BothFlavors(t *testing.T) {
 	require.NoError(t, os.MkdirAll(modernDir, 0o755))
 	require.NoError(t, os.WriteFile(filepath.Join(modernDir, "state.json"),
 		[]byte(`{"title":"modern chat","workDir":"`+workDir+`"}`), 0o644))
+	// Kimi Code stores the transcript at agents/main/wire.jsonl (no
+	// context.jsonl). Include tool/assistant events that must NOT be counted.
+	require.NoError(t, os.MkdirAll(filepath.Join(modernDir, "agents", "main"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(modernDir, "agents", "main", "wire.jsonl"), []byte(
+		`{"type":"context.append_message","message":{"role":"user","content":"first ask"},"origin":{"kind":"user"}}
+`+
+			`{"type":"context.append_message","message":{"role":"assistant","content":"thinking..."},"origin":{"kind":"assistant"}}
+`+
+			`{"type":"context.append_message","message":{"role":"tool","content":"result"},"origin":{"kind":"tool_call_executor"}}
+`+
+			`{"type":"context.append_message","message":{"role":"user","content":"second ask"},"origin":{"kind":"user"}}
+`+
+			`{"type":"context.append_message","message":{"role":"user","content":"third ask"},"origin":{"kind":"user"}}
+`), 0o644))
 
 	// Kimi Code CLI session belonging to a DIFFERENT workDir — filtered out.
 	otherDir := filepath.Join(home, ".kimi-code", "sessions", "wd_proj_ab12", "session_other-1")
@@ -206,7 +220,13 @@ func TestListKimiSessions_BothFlavors(t *testing.T) {
 
 	modern, ok := byID["session_modern-1"]
 	require.True(t, ok, "Kimi Code session should be listed")
-	assert.Equal(t, "modern chat", modern.Summary)
+	// Summary now comes from the first user turn in wire.jsonl (matching the
+	// legacy behavior of summarizing from the transcript), falling back to the
+	// state title only when no transcript exists.
+	assert.Equal(t, "first ask", modern.Summary)
+	// Regression (#1564 review): Kimi Code sessions must not report 0 messages —
+	// the count comes from agents/main/wire.jsonl when context.jsonl is absent.
+	assert.Equal(t, 3, modern.MessageCount, "Kimi Code session should count user turns from wire.jsonl")
 
 	_, ok = byID["session_other-1"]
 	assert.False(t, ok, "Kimi Code session from another workDir must be filtered out")
@@ -215,4 +235,44 @@ func TestListKimiSessions_BothFlavors(t *testing.T) {
 	assert.NotEmpty(t, findKimiSessionDir("legacy-uuid-1"))
 	assert.NotEmpty(t, findKimiSessionDir("session_modern-1"))
 	assert.Empty(t, findKimiSessionDir("does-not-exist"))
+}
+
+// Regression for #1564 review feedback: /list reported 0 messages for every
+// Kimi Code session because the count only read context.jsonl, which the Kimi
+// Code CLI does not write. This test pins the wire.jsonl fallback: user turns
+// are counted, tool/assistant events are ignored, and the first user text
+// becomes the summary.
+func TestParseKimiSessionDir_WireJSONLMessageCount(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	workDir := t.TempDir()
+	sessionID := "session_wire-1"
+	sessionDir := filepath.Join(home, ".kimi-code", "sessions", "wd_proj_ab12", sessionID)
+	require.NoError(t, os.MkdirAll(filepath.Join(sessionDir, "agents", "main"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(sessionDir, "state.json"),
+		[]byte(`{"title":"wire chat","workDir":"`+workDir+`"}`), 0o644))
+
+	// Simulate a wire transcript: two user turns, some assistant/tool noise,
+	// punctuated by a non-append event that must be skipped.
+	wire := []byte(
+		`{"type":"context.append_message","message":{"role":"user","content":"  hello there  "},"origin":{"kind":"user"}}
+` +
+			`{"type":"context.append_message","message":{"role":"assistant","content":"hi, inspect <thinking>"},"origin":{"kind":"assistant"}}
+` +
+			`{"type":"context.append_message","message":{"role":"tool","content":"ls output"},"origin":{"kind":"tool_call_executor"}}
+` +
+			`{"type":"session.started","session_id":"` + sessionID + `"}
+` +
+			`{"type":"context.append_message","message":{"role":"user","content":"now list sessions"},"origin":{"kind":"user"}}
+`)
+	require.NoError(t, os.WriteFile(filepath.Join(sessionDir, "agents", "main", "wire.jsonl"), wire, 0o644))
+
+	info := parseKimiSessionDir(sessionDir, workDir)
+	require.NotNil(t, info)
+	assert.Equal(t, sessionID, info.ID)
+	assert.Equal(t, 2, info.MessageCount,
+		"only user turns should be counted from wire.jsonl")
+	assert.Equal(t, "hello there", info.Summary,
+		"summary should be the first user text, trimmed")
 }

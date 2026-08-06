@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -386,6 +387,95 @@ func listKimiSessions(workDir string) ([]core.AgentSessionInfo, error) {
 	return sessions, nil
 }
 
+// parseKimiTranscript counts a session's conversation messages and extracts a
+// summary from its transcript file. The legacy kimi-cli writes the transcript
+// to context.jsonl; the Kimi Code CLI instead stores it at
+// agents/main/wire.jsonl (#1561). We read whichever exists so /list does not
+// report 0 messages for modern sessions (review feedback on #1564).
+func parseKimiTranscript(sessionDir string) (msgCount int, summary string) {
+	contextPath := filepath.Join(sessionDir, "context.jsonl")
+	if f, err := os.Open(contextPath); err == nil {
+		defer f.Close()
+		msgCount, summary = countContextJSONL(f)
+	}
+	if msgCount == 0 {
+		// Kimi Code CLI fallback — no context.jsonl, so count from wire.jsonl.
+		wirePath := filepath.Join(sessionDir, "agents", "main", "wire.jsonl")
+		if f, err := os.Open(wirePath); err == nil {
+			defer f.Close()
+			m, s := countWireJSONL(f)
+			if m > msgCount {
+				msgCount = m
+			}
+			if summary == "" {
+				summary = s
+			}
+		}
+	}
+	return msgCount, summary
+}
+
+// countContextJSONL parses a legacy kimi-cli context.jsonl transcript,
+// counting user/assistant messages and taking the first user text as summary.
+func countContextJSONL(f io.Reader) (msgCount int, summary string) {
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	for scanner.Scan() {
+		var entry struct {
+			Role    string `json:"role"`
+			Content string `json:"content"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &entry) != nil {
+			continue
+		}
+		if entry.Role == "user" || entry.Role == "assistant" {
+			msgCount++
+			if entry.Role == "user" && entry.Content != "" && summary == "" {
+				summary = strings.TrimSpace(entry.Content)
+			}
+		}
+	}
+	return msgCount, summary
+}
+
+// countWireJSONL parses a Kimi Code CLI agents/main/wire.jsonl transcript.
+// Each line is an event such as
+//
+//	{"type":"context.append_message","message":{"role":"user","content":...},
+//	 "origin":{"kind":"user",...}}
+//
+// We count only user-side turns (origin.kind == "user") rather than every
+// appended event, which would also include tool results and streamed
+// assistant chunks. This matches the reviewer signal for "how many messages
+// are in this session" and keeps the count stable.
+func countWireJSONL(f io.Reader) (msgCount int, summary string) {
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 256*1024), 256*1024)
+	for scanner.Scan() {
+		var entry struct {
+			Type    string `json:"type"`
+			Message struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"message"`
+			Origin struct {
+				Kind string `json:"kind"`
+			} `json:"origin"`
+		}
+		if json.Unmarshal(scanner.Bytes(), &entry) != nil {
+			continue
+		}
+		if entry.Type != "context.append_message" || entry.Origin.Kind != "user" {
+			continue
+		}
+		msgCount++
+		if entry.Message.Content != "" && summary == "" {
+			summary = strings.TrimSpace(entry.Message.Content)
+		}
+	}
+	return msgCount, summary
+}
+
 func parseKimiSessionDir(sessionDir, filterWorkDir string) *core.AgentSessionInfo {
 	statePath := filepath.Join(sessionDir, "state.json")
 	stateData, err := os.ReadFile(statePath)
@@ -429,29 +519,7 @@ func parseKimiSessionDir(sessionDir, filterWorkDir string) *core.AgentSessionInf
 		return nil
 	}
 
-	msgCount := 0
-	summary := ""
-	contextPath := filepath.Join(sessionDir, "context.jsonl")
-	if f, err := os.Open(contextPath); err == nil {
-		defer f.Close()
-		scanner := bufio.NewScanner(f)
-		scanner.Buffer(make([]byte, 256*1024), 256*1024)
-		for scanner.Scan() {
-			var entry struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
-			}
-			if json.Unmarshal(scanner.Bytes(), &entry) != nil {
-				continue
-			}
-			if entry.Role == "user" || entry.Role == "assistant" {
-				msgCount++
-				if entry.Role == "user" && entry.Content != "" && summary == "" {
-					summary = strings.TrimSpace(entry.Content)
-				}
-			}
-		}
-	}
+	msgCount, summary := parseKimiTranscript(sessionDir)
 
 	if summary == "" {
 		summary = state.CustomTitle
