@@ -34,7 +34,7 @@ func liveKimiBin(t *testing.T) string {
 
 func runTurn(t *testing.T, s core.AgentSession, prompt string) string {
 	t.Helper()
-	require.NoError(t, s.Send(prompt, nil, nil))
+	require.NoError(t, s.Send(prompt, "", nil, nil))
 
 	var text strings.Builder
 	deadline := time.After(150 * time.Second)
