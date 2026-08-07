@@ -395,14 +395,14 @@ func listKimiSessions(workDir string) ([]core.AgentSessionInfo, error) {
 func parseKimiTranscript(sessionDir string) (msgCount int, summary string) {
 	contextPath := filepath.Join(sessionDir, "context.jsonl")
 	if f, err := os.Open(contextPath); err == nil {
-		defer f.Close()
+		defer func() { _ = f.Close() }()
 		msgCount, summary = countContextJSONL(f)
 	}
 	if msgCount == 0 {
 		// Kimi Code CLI fallback — no context.jsonl, so count from wire.jsonl.
 		wirePath := filepath.Join(sessionDir, "agents", "main", "wire.jsonl")
 		if f, err := os.Open(wirePath); err == nil {
-			defer f.Close()
+			defer func() { _ = f.Close() }()
 			m, s := countWireJSONL(f)
 			if m > msgCount {
 				msgCount = m
