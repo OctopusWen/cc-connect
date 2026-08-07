@@ -250,6 +250,9 @@ type imageBatchEntry struct {
 	timer        *time.Timer
 }
 
+// compile-time interface assertions
+var _ core.RelayGroupVisibilityTarget = (*Platform)(nil)
+
 type interactivePlatform struct {
 	*Platform
 }
@@ -781,8 +784,7 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 		}
 
 		rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey}
-		h := p.getHandler()
-		go h(p.dispatchPlatform(), &core.Message{
+		go p.dispatchCoreMessage(&core.Message{
 			SessionKey:           sessionKey,
 			Platform:             p.platformName,
 			UserID:               userID,
@@ -814,8 +816,7 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 	// askq: — AskUserQuestion option selected, forward as user message
 	if strings.HasPrefix(actionVal, "askq:") {
 		rctx := replyContext{messageID: messageID, chatID: chatID, sessionKey: sessionKey}
-		h := p.getHandler()
-		go h(p.dispatchPlatform(), &core.Message{
+		go p.dispatchCoreMessage(&core.Message{
 			SessionKey: sessionKey,
 			Platform:   p.platformName,
 			UserID:     userID,
@@ -850,8 +851,7 @@ func (p *Platform) onCardAction(event *callback.CardActionTriggerEvent) (*callba
 
 		slog.Info(p.tag()+": card action dispatched as command", "cmd", cmdText, "user", userID)
 
-		h := p.getHandler()
-		go h(p.dispatchPlatform(), &core.Message{
+		go p.dispatchCoreMessage(&core.Message{
 			SessionKey: sessionKey,
 			Platform:   p.platformName,
 			UserID:     userID,
@@ -1089,11 +1089,39 @@ func (p *Platform) dispatchCoreMessage(msg *core.Message) {
 	if msg == nil || h == nil {
 		return
 	}
+	p.populateWorkspaceChannelKeys(msg)
 	if p.isMessageRecalled(msg.MessageID) {
 		slog.Debug(p.tag()+": recalled message dispatch dropped", "message_id", msg.MessageID)
 		return
 	}
 	h(p.dispatchPlatform(), msg)
+}
+
+// populateWorkspaceChannelKeys keeps workspace binding scope aligned with the
+// session scope. In Feishu topic mode the session key contains the root message
+// ID, while the legacy chat-level binding remains the default for new topics.
+func (p *Platform) populateWorkspaceChannelKeys(msg *core.Message) {
+	if msg == nil || msg.ChannelKey != "" {
+		return
+	}
+	rctx, ok := msg.ReplyCtx.(replyContext)
+	if !ok || rctx.chatID == "" {
+		return
+	}
+	msg.ChannelKey = rctx.chatID
+	if !p.threadIsolation {
+		return
+	}
+	parts := strings.SplitN(rctx.sessionKey, ":", 3)
+	if len(parts) != 3 || parts[0] != p.platformName || parts[1] != rctx.chatID {
+		return
+	}
+	rootID, ok := parseThreadRootID(parts[2])
+	if !ok {
+		return
+	}
+	msg.ChannelKey = rctx.chatID + ":topic:" + rootID
+	msg.LegacyChannelKey = rctx.chatID
 }
 
 // bufferImage adds a freshly-downloaded image to the per-session batch buffer.
@@ -3611,6 +3639,27 @@ func (p *Platform) ReconstructReplyCtx(sessionKey string) (any, error) {
 		}
 	}
 	return rc, nil
+}
+
+// RelayGroupVisibilityKey implements core.RelayGroupVisibilityTarget for
+// feishu.  When the caller session key targets a feishu thread (its
+// third colon-separated segment carries a non-empty "root:" or
+// "thread:" prefix produced by makeSessionKey), the visibility echo
+// gets routed back into that thread; otherwise the platform returns
+// ("", false) so core falls back to the channel-level ":relay" default.
+func (p *Platform) RelayGroupVisibilityKey(callerSessionKey string) (string, bool) {
+	parts := strings.SplitN(callerSessionKey, ":", 3)
+	if len(parts) < 3 || parts[0] != "feishu" {
+		return "", false
+	}
+	chatID := parts[1]
+	third := parts[2]
+	for _, pfx := range []string{"root:", "thread:"} {
+		if after, ok := strings.CutPrefix(third, pfx); ok && after != "" {
+			return "feishu:" + chatID + ":" + third, true
+		}
+	}
+	return "", false
 }
 
 func parseThreadRootID(sessionTail string) (string, bool) {
